@@ -1,0 +1,32 @@
+<?php
+
+/**
+ * @file
+ * A demo add-on for the D2D module.
+ *
+ * A longer description will follow here.
+ */
+
+require_once 'includes/d2dsearch.client.inc';
+require_once 'includes/d2dsearch.server.inc';
+require_once 'includes/d2dsearch.constants.inc';
+require_once 'includes/d2dsearch.demo.inc';
+
+/**
+ * Implements hook_menu_alter().
+ */
+function d2dsearch_menu_alter(&$items) {
+  $items['admin/d2d/search'] = array(
+    'title' => 'D2D Search',
+    'page callback' => 'd2dsearch_main',
+    'access arguments' => array('administer d2dsearch'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 80,
+  );
+  $items['admin/d2d/search/get_result'] = array(
+    'page callback' => 'd2dsearch_get_results',
+    'access arguments' => array('administer d2dsearch'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
