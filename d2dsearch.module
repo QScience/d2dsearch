@@ -30,3 +30,10 @@ function d2dsearch_menu_alter(&$items) {
   );
   return $items;
 }
+function d2dsearch_permission() {
+  return array(
+    'administer d2dsearch' => array(
+      'title' => t('administer D2DSearch'),
+    ),
+  );
+}
