@@ -1,5 +1,5 @@
 name = D2D Search
-description = "A tiny demo to demonstrate search with D2D"
+description = "A module allowing search on remote instances using D2D"
 package = D2D
 core = 7.x
 files[] = d2dsearch.module
