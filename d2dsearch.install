@@ -105,7 +105,7 @@ function d2dsearch_schema() {
     'primary key' => array('id'),
   );
   $schema['d2dsearch_result_cache'] = array(
-    'description' => 'Stores information on queries to be forwarded.',
+    'description' => 'Stores information on results of queries.',
     'fields' => array(
       'id' => array(
         'type' => 'serial',
