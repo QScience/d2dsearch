@@ -1,0 +1,8 @@
+name = D2D Search Demo
+description = "Demonstration on D2D search"
+package = D2D
+core = 7.x
+files[] = d2dsearch_demp.module
+files[] = d2dsearch_demo.install
+dependencies[] = d2d
+dependencies[] = d2dsearch
