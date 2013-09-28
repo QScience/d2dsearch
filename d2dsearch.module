@@ -256,6 +256,9 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
   if (is_null($n_hops)) {
     $n_hops = D2DSEARCH_DEFAULT_N_HOPS;
   }
+  else {
+    $n_hops = intval($n_hops);
+  }
 
   watchdog('d2dsearch', '_d2dsearch_process_query_helper');
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
@@ -279,7 +282,7 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
   }
 
   // TODO: check if we need to write to database if we n_hops === 0
-  if ($n_hops <= 0) {
+  if ($n_hops > 0) {
 
     // Decrement the number of new hops.
     $n_hops = $n_hops - 1;
