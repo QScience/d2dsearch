@@ -18,7 +18,7 @@ function d2dsearch_d2d_secure_rpc() {
       'query_id' => '_d2dsearch_check_query_id',
       'type' => '_d2dsearch_check_query_type',
       'query' => '_d2dsearch_check_query',
-      'n_hops' => 'is_string',
+      'n_hops' => 'is_int',
     ),
     'callback' => '_d2dsearch_process_query',
     'description' => 'processes and forwards a query',
