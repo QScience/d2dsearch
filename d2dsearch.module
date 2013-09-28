@@ -6,6 +6,7 @@
  */
 
 require_once 'includes/d2dsearch.constants.inc';
+require_once 'includes/d2dsearch.utils.inc';
 
 /**
  * Implements hook_d2d_secure_rpc().
@@ -17,6 +18,7 @@ function d2dsearch_d2d_secure_rpc() {
       'query_id' => '_d2dsearch_check_query_id',
       'type' => '_d2dsearch_check_query_type',
       'query' => '_d2dsearch_check_query',
+      'n_hops' => 'is_string',
     ),
     'callback' => '_d2dsearch_process_query',
     'description' => 'processes and forwards a query',
@@ -36,49 +38,33 @@ function d2dsearch_d2d_secure_rpc() {
  * D2D callback; processes incoming search requests.
  */
 function _d2dsearch_process_query($arguments, $rpc_info) {
+  // Explanation: the NULL value is for the FRIENDS parameter. This way is sent
+  // to all friends, if n_hops is > 0.
   background_process_start(
     '_d2dsearch_process_query_helper',
     $arguments['query_id'],
     $arguments['type'],
-    //$arguments['searchtype'], // Add this to select which friends to include
     $arguments['query'],
-    $rpc_info['instance']['id']);
+    NULL,
+    $arguments['n_hops'],
+    $rpc_info['instance']['id']
+  );
   return 'SUCCESS';
 }
 
+/**
+ * D2D callback; processes incoming results.
+ */
 function _d2dsearch_process_result($arguments, $rpc_info) {
-  background_process_start('_d2dsearch_process_result_helper', $arguments['query_id'], $arguments['result'], $rpc_info['instance']['id']);
+  background_process_start(
+    '_d2dsearch_process_result_helper',
+    $arguments['query_id'],
+    $arguments['result'],
+    $rpc_info['instance']['id']
+  );
   return 'SUCCESS';
 }
 
-function _d2dsearch_lock_acquire($name, $max_wait) {
-  if (lock_acquire($name)) {
-    return TRUE;
-  }
-  $start_time = microtime(TRUE);
-  while (microtime(TRUE) < $start_time + $max_wait) {
-    if (!lock_wait($name, 1) && lock_acquire($name)) {
-      return TRUE;
-    }
-  }
-  return FALSE;
-}
-
-function _d2dsearch_check_query_id($query_id) {
-  return is_string($query_id) && strlen($query_id) == D2DSEARCH_QUERY_ID_LENGTH && d2d_is_hex_string($query_id);
-}
-
-function _d2dsearch_check_query($query) {
-  return is_string($query) && strlen($query) <= D2DSEARCH_QUERY_MAX_LENGTH;
-}
-
-function _d2dsearch_check_query_type($type) {
-  return is_string($type) && strlen($type) <= D2DSEARCH_QUERY_TYPE_MAX_LENGTH;
-}
-
-function _d2dsearch_random_query() {
-  return d2d_random_hex_string(D2DSEARCH_QUERY_ID_LENGTH);
-}
 
 /**
  * Starts a remote (or also local) search.
@@ -95,10 +81,13 @@ function _d2dsearch_random_query() {
  * @return int|bool $query_id
  *   The id of the query just started, or FALSE if an error occurs.
  */
-function d2dsearch_query_start($type, $query, $do_local_search = TRUE) {
+function d2dsearch_query_start($type, $query, $friends = array(), $n_hops = NULL,
+  $do_local_search = TRUE) {
+
   $query_id = _d2dsearch_random_query();
   $own_id = d2d_api_own_instance_id_get();
-  if (!_d2dsearch_process_query_helper($query_id, $type, $query, $own_id, $do_local_search)) {
+  if (!_d2dsearch_process_query_helper($query_id, $type, $query, $own_id,
+      $friends, $n_hops, $do_local_search)) {
     return FALSE;
   }
   return $query_id;
@@ -109,8 +98,9 @@ function d2dsearch_query_start($type, $query, $do_local_search = TRUE) {
  *
  * @see d2d_call_secure_rpc()
  */
-function _d2dsearch_query_forwarding_worker($qid, $query_id, $type, $query, $friends) {
-  // TODO sends to N friends with a condition.
+function _d2dsearch_query_forwarding_worker($qid, $query_id, $type, $query,
+  $friends, $n_hops) {
+
   $n_friends = sizeof($friends);
   for ($i = 0; $i < $n_friends; $i++) {
     if (!_d2dsearch_lock_acquire('d2dsearch_query_batch', D2DSEARCH_ACQUIRE_TIMEOUT)) {
@@ -141,6 +131,7 @@ function _d2dsearch_query_forwarding_worker($qid, $query_id, $type, $query, $fri
       'query_id' => $query_id,
       'type' => $type,
       'query' => $query,
+      'n_hops' => $n_hops,
     );
     $res = d2d_call_secure_rpc($friend, 'd2dsearch_process_query', $arguments, $error_string);
     if ($res === FALSE) {
@@ -149,6 +140,9 @@ function _d2dsearch_query_forwarding_worker($qid, $query_id, $type, $query, $fri
   }
 }
 
+/**
+ * Executes the callback method associated with the _$type_
+ */
 function _d2dsearch_do_local_search($query_id, $type, $query) {
   $hooks = module_invoke_all('d2dsearch_query_type');
   if (!array_key_exists($type, $hooks)) {
@@ -162,20 +156,23 @@ function _d2dsearch_do_local_search($query_id, $type, $query) {
   }
 }
 
-function _d2dsearch_count_results($qid) {
-  $result = db_query('SELECT count(*) as result_count FROM {d2dsearch_result_cache} WHERE qid=:qid', array(':qid' => $qid));
-  if ($row = $result->fetchAssoc()) {
-    return $row['result_count'];
-  }
-  else {
-    return 0;
-  }
-}
-
+/**
+ * Prepares the database, and starts N background search processes
+ *
+ * This function is always called upon receiving remote requests.
+ *
+ * @param string $query_id
+ *   The id of the query to which the results belong.
+ * @param string $result
+ *   The serialized results.
+ * @param $instance_id
+ *   The id of the instance that sent this results.
+ */
 function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
     return;
   }
+  // Here we retrieve who was the original requester for this result.
   $db_result = db_query('SELECT qid as qid, instance_id as instance_id FROM {d2dsearch_query_cache} WHERE query_id=:query_id', array(':query_id' => $query_id));
   if ($record = $db_result->fetchObject()) {
     $qid = $record->qid;
@@ -195,6 +192,9 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
     lock_release('d2dsearch_result_cache');
     return;
   }
+
+  // Inserting incoming results in database.
+  // TODO: at this point we could check if results are duplicates.
   db_insert('d2dsearch_result_cache')->fields(array(
     'qid' => $qid,
     'instance_id' => $instance_id,
@@ -202,11 +202,15 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
     'timestamp' => d2d_get_time(),
   ))->execute();
   lock_release('d2dsearch_result_cache');
+
+  // If this are my results, stop the process.
   $myid = d2d_api_own_instance_id_get();
   if ($next_instance_id == $myid) {
     return;
   }
-//  $friend = d2d_get_instance2($next_instance_id);
+
+  // Forward results to next friend. It can be original requester,
+  // or another forwarder.
   $friend = d2d_api_instance_get_by_id($next_instance_id);
   watchdog('d2dsearch', '$friend = ' . var_export($friend, TRUE));
   if (!$friend['is_friend']) {
@@ -224,7 +228,7 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
 }
 
 /**
- * Prepares the database, and starts N backgroun search processes
+ * Prepares the database, and starts N background search processes
  *
  * This function is called upon receiving remote requests, or it can be
  * executed locally.
@@ -246,7 +250,13 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
  * @see d2dsearch_query_start()
  * @see d2dsearch_process_result()
  */
-function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id, $do_local_search=TRUE) {
+function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
+  $friends = NULL, $n_hops = NULL, $do_local_search = TRUE) {
+
+  if (is_null($n_hops)) {
+    $n_hops = D2DSEARCH_DEFAULT_N_HOPS;
+  }
+
   watchdog('d2dsearch', '_d2dsearch_process_query_helper');
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
     return FALSE;
@@ -268,27 +278,45 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
     return FALSE;
   }
 
-  // TODO: select specific friends, e.g. from a group
-  $friends = _d2d_api_friend_get(FALSE);
-  unset($friends[$instance_id]);
-  if (!_d2dsearch_lock_acquire('d2dsearch_query_batch', D2DSEARCH_ACQUIRE_TIMEOUT)) {
-    return;
+  // TODO: check if we need to write to database if we n_hops === 0
+  if ($n_hops <= 0) {
+
+    // Decrement the number of new hops.
+    $n_hops = $n_hops - 1;
+
+    // Search is performed either on a selected group of friends (can include
+    // local instance) or on ALL friends (excluding local instance).
+    if (is_null($friends)) {
+      $friends = _d2d_api_friend_get(FALSE);
+    }
+
+    // Remove local instance id if present in the friends array.
+    if (isset($friends[$instance_id])) {
+      unset($friends[$instance_id]);
+    }
+
+    if (!_d2dsearch_lock_acquire('d2dsearch_query_batch', D2DSEARCH_ACQUIRE_TIMEOUT)) {
+      return;
+    }
+
+    $db_query = db_insert('d2dsearch_query_batch')->fields(array('qid', 'instance_id'));
+    foreach ($friends as $friend_id => $record) {
+      $db_query->values(array('qid' => $qid, 'instance_id' => $friend_id));
+    }
+    $db_query->execute();
+    lock_release('d2dsearch_query_batch');
+    $n_friends = sizeof($friends);
+
+    $n_query_forwarding_worker = min($n_friends, D2DSEARCH_NUMBER_OF_QUERY_FORWARDING_WORKER);
+    for ($i = 0; $i < $n_query_forwarding_worker; $i++) {
+      background_process_start('_d2dsearch_query_forwarding_worker', $qid,
+        $query_id, $type, $query, $friends, $n_hops);
+    }
   }
-  watchdog('d2dsearch', 'line 213');
-  $db_query = db_insert('d2dsearch_query_batch')->fields(array('qid', 'instance_id'));
-  foreach ($friends as $friend_id => $record) {
-    $db_query->values(array('qid' => $qid, 'instance_id' => $friend_id));
-  }
-  $db_query->execute();
-  lock_release('d2dsearch_query_batch');
-  $n_friends = sizeof($friends);
-  $n_query_forwarding_worker = min($n_friends, D2DSEARCH_NUMBER_OF_QUERY_FORWARDING_WORKER);
-  for ($i = 0; $i < $n_query_forwarding_worker; $i++) {
-    background_process_start('_d2dsearch_query_forwarding_worker', $qid, $query_id, $type, $query, $friends);
-  }
+
   if ($do_local_search) {
-    watchdog('d2dsearch', 'line 226');
     _d2dsearch_do_local_search($query_id, $type, $query);
   }
+
   return TRUE;
 }
