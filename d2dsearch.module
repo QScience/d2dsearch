@@ -281,6 +281,7 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
     $n_hops = intval($n_hops);
   }
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
+    watchdog('d2dsearch', t('Could not acquire lock.'));
     return FALSE;
   }
   try {
@@ -297,8 +298,11 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
   }
   lock_release('d2dsearch_query_cache');
   if (is_null($qid)) {
+    watchdog('d2dsearch', t('Database error.'));
     return FALSE;
   }
+
+  watchdog('d2dsearch', t('???'));
 
   // TODO: check if we need to write to database if we n_hops === 0
   if ($n_hops > 0) {
@@ -340,7 +344,11 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
   }
 
   if ($do_local_search) {
+     watchdog('d2dsearch', t('local search.'));
     _d2dsearch_do_local_search($query_id, $type, $query);
+  }
+  else {
+    watchdog('d2dsearch', t('No local search.'));
   }
 
   return TRUE;
