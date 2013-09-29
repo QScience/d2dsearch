@@ -49,9 +49,9 @@ function _d2dsearch_process_query($arguments, $rpc_info) {
     $arguments['query_id'],
     $arguments['type'],
     $arguments['query'],
+    $rpc_info['instance']['id']
     NULL,
     $arguments['n_hops'],
-    $rpc_info['instance']['id']
   );
   return 'SUCCESS';
 }
@@ -60,6 +60,10 @@ function _d2dsearch_process_query($arguments, $rpc_info) {
  * D2D callback; processes incoming results.
  */
 function _d2dsearch_process_result($arguments, $rpc_info) {
+  watchdog('d2dsearch', 'Results received from !host: %res', array(
+    '%res' => $arguments['result'],
+    '!host' => $rpc_info['instance']['url'],
+  ));
   background_process_start(
     '_d2dsearch_process_result_helper',
     $arguments['query_id'],
@@ -68,7 +72,6 @@ function _d2dsearch_process_result($arguments, $rpc_info) {
   );
   return 'SUCCESS';
 }
-
 
 /**
  * Starts a remote (or also local) search.
@@ -169,7 +172,7 @@ function _d2dsearch_do_local_search($query_id, $type, $query) {
 /**
  * Prepares the database, and starts N background search processes
  *
- * This function is always called upon receiving remote requests.
+ * This function is only called upon receiving results from remote hosts.
  *
  * @param string $query_id
  *   The id of the query to which the results belong.
@@ -177,13 +180,10 @@ function _d2dsearch_do_local_search($query_id, $type, $query) {
  *   The serialized results.
  * @param $instance_id
  *   The id of the instance that sent this results.
+ *
+ * @see d2dsearch_process_result()
  */
 function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
-
-  watchdog('d2dsearch', 'Results received from %instance: %res', array(
-    '%res' => $result,
-    '$instance' => $instance_id,
-  ));
 
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
     return;
