@@ -38,10 +38,10 @@ function d2dsearch_d2d_secure_rpc() {
  * D2D callback; processes incoming search requests.
  */
 function _d2dsearch_process_query($arguments, $rpc_info) {
-  watchdog('d2dsearch', t('Incoming query request from !host: !query', array(
+  watchdog('d2dsearch', 'Incoming query request from !host: !query', array(
     '!query' => $arguments['type'],
     '!host' => $rpc_info['instance']['url'],
-  )));
+  ));
   // Explanation: the NULL value is for the FRIENDS parameter. This way is sent
   // to all friends, if n_hops is > 0.
   background_process_start(
@@ -139,10 +139,10 @@ function _d2dsearch_query_forwarding_worker($qid, $query_id, $type, $query,
     );
     $res = d2d_call_secure_rpc($friend, 'd2dsearch_process_query', $arguments, $error_string);
     if ($res === FALSE) {
-      watchdog('d2dsearch', t('An error occurred while forwarding query to !friend: !err', array(
+      watchdog('d2dsearch', 'An error occurred while forwarding query to !friend: !err', array(
         '!friend' => $friend['url'],
         '!err' => check_plain($error_string),
-      )));
+      ), 'error');
     }
   }
 }
@@ -151,9 +151,9 @@ function _d2dsearch_query_forwarding_worker($qid, $query_id, $type, $query,
  * Executes the callback method associated with the _$type_
  */
 function _d2dsearch_do_local_search($query_id, $type, $query) {
-  watchdog('d2dsearch', t('Performing local search: %request', array(
+  watchdog('d2dsearch', 'Performing local search: %request', array(
     '%request' => $type,
-  )));
+  ));
   $hooks = module_invoke_all('d2dsearch_query_type');
   if (!array_key_exists($type, $hooks)) {
     return;
@@ -180,10 +180,10 @@ function _d2dsearch_do_local_search($query_id, $type, $query) {
  */
 function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
 
-  watchdog('d2dsearch', t('Results received from %instance: %res', array(
+  watchdog('d2dsearch', 'Results received from %instance: %res', array(
     '%res' => $result,
     '$instance' => $instance_id,
-  )));
+  ));
 
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
     return;
@@ -229,9 +229,9 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
   // Forward results to next friend. It can be original requester,
   // or another forwarder.
   $friend = d2d_api_instance_get_by_id($next_instance_id);
-  watchdog('d2dsearch', t('Forwarding results. Next hop: !friend', array(
+  watchdog('d2dsearch', 'Forwarding results. Next hop: !friend', array(
     '!friend' => var_export($friend, TRUE),
-  )));
+  ));
 
   if (!$friend['is_friend']) {
     return;
@@ -242,9 +242,9 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
   );
   $res = d2d_call_secure_rpc($friend, 'd2dsearch_process_result', $arguments, $error_string);
   if ($res === FALSE) {
-    watchdog('d2dsearch', t('An error occurred while forwarding results: !err.', array(
+    watchdog('d2dsearch', 'An error occurred while forwarding results: !err.', array(
       '!err' => check_plain($error_string),
-    )));
+    ), 'error');
   }
 }
 
@@ -253,7 +253,10 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
  *
  * This function is called upon receiving remote requests, or it can be
  * executed locally.
-
+ *
+ * Each hop in the chain of forwarding decrements the value of $n_hops of 1.
+ * When $n_hops reaches zero, the query is not forwarded any longer.
+ *
  * @param int $query_id
  *   The id of the query
  * @param string $type
@@ -262,6 +265,12 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
  *   The actual query string.
  * @param int $instance_id
  *   The id of the caller instance.
+ * @param array $friends
+ *   Array of friends to whom forwarding the query, or NULL to forward to ALL.
+ *   Defaults, NULL.
+ * @param int $n_hops
+ *   Number of remaining hops for the query. If NULL, it is initialized to
+ *   D2DSEARCH_DEFAULT_N_HOPS. Defaults, NULL.
  * @param bool $do_local_search
  *   Includes local results in search. Defaults, TRUE
  *
@@ -281,7 +290,7 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
     $n_hops = intval($n_hops);
   }
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
-    watchdog('d2dsearch', t('Could not acquire lock.'));
+    watchdog('d2dsearch', 'Could not acquire database lock.', NULL, 'error');
     return FALSE;
   }
   try {
@@ -294,21 +303,19 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
     ))->execute();
   }
   catch (Exception $e) {
+    watchdog('d2dsearch', 'Database error: !e', array('!e' => $e), 'error');
     $qid = NULL;
   }
   lock_release('d2dsearch_query_cache');
   if (is_null($qid)) {
-    watchdog('d2dsearch', t('Database error.'));
     return FALSE;
   }
 
-  watchdog('d2dsearch', t('???'));
-
   // TODO: check if we need to write to database if we n_hops === 0
   if ($n_hops > 0) {
-    watchdog('d2dsearch', t('Forwarding request, still %hops hops', array(
+    watchdog('d2dsearch', 'Forwarding request, still %hops hops', array(
       '%hops' => $n_hops,
-    )));
+    ));
 
     // Decrement the number of new hops.
     $n_hops = $n_hops - 1;
@@ -342,13 +349,12 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
         $query_id, $type, $query, $friends, $n_hops);
     }
   }
+  else {
+    watchdog('d2dsearch', 'Last hop. Query not forwaded.');
+  }
 
   if ($do_local_search) {
-     watchdog('d2dsearch', t('local search.'));
     _d2dsearch_do_local_search($query_id, $type, $query);
-  }
-  else {
-    watchdog('d2dsearch', t('No local search.'));
   }
 
   return TRUE;
