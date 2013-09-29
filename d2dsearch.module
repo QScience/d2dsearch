@@ -51,7 +51,7 @@ function _d2dsearch_process_query($arguments, $rpc_info) {
     $arguments['query'],
     $rpc_info['instance']['id'],
     NULL,
-    $arguments['n_hops'],
+    $arguments['n_hops']
   );
   return 'SUCCESS';
 }
