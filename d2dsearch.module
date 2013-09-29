@@ -49,7 +49,7 @@ function _d2dsearch_process_query($arguments, $rpc_info) {
     $arguments['query_id'],
     $arguments['type'],
     $arguments['query'],
-    $rpc_info['instance']['id']
+    $rpc_info['instance']['id'],
     NULL,
     $arguments['n_hops'],
   );
