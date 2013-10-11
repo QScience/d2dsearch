@@ -9,6 +9,56 @@ require_once 'includes/d2dsearch.constants.inc';
 require_once 'includes/d2dsearch.utils.inc';
 
 /**
+ * Implements hook_menu()
+ */
+function d2dsearch_menu() {
+  $items['admin/d2dsearch'] = array(
+    'title' => 'D2D Search',
+    'description' => t('Api to perform search in the network of your friends.'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('d2dsearch_settings_page'),
+    'access arguments' => array('administer qscience search'),
+  );
+  return $items;
+}
+
+/**
+ * Menu callback; display the settings page.
+ */
+function d2dsearch_settings_page($form, &$form_state) {
+  $form['settings'] = array(
+    '#type' => 'fieldset',
+    '#title' => 'D2D Search Settings',
+  );
+  $form['settings']['clear_all_caches'] = array(
+    '#type' => 'submit',
+    '#title' => 'Clear cache',
+    '#value' => 'Clear',
+    '#prefix' => '<p>' . t('Clear D2D Search cache (query + results) for all users. This operation cannot be undone.') . '</p>',
+  );
+  return $form;
+}
+
+/**
+ * Menu callback; display the settings page.
+ */
+function d2dsearch_settings_page_submit($form, &$form_state) {
+  if (isset($form_state['values']['clear_all_caches'])) {
+    d2dsearch_delete_caches();
+    drupal_set_message(t('All D2D Search caches cleared.'));
+  }
+}
+
+/**
+ * Deletes all entries from database caches.
+ */
+function d2dsearch_delete_caches() {
+  db_delete('d2dsearch_query_cache')->execute();
+  db_delete('d2dsearch_result_cache')->execute();
+}
+
+
+/**
  * Implements hook_d2d_secure_rpc().
  */
 function d2dsearch_d2d_secure_rpc() {
@@ -152,6 +202,8 @@ function _d2dsearch_query_forwarding_worker($qid, $query_id, $type, $query,
 
 /**
  * Executes the callback method associated with the _$type_
+ *
+ * @see _d2dsearch_process_result_helper()
  */
 function _d2dsearch_do_local_search($query_id, $type, $query) {
   watchdog('d2dsearch', 'Performing local search: %request', array(
@@ -165,25 +217,34 @@ function _d2dsearch_do_local_search($query_id, $type, $query) {
   $result = call_user_func($hook['callback'], $query);
   if (is_string($result)) {
     $my_instance = d2d_api_own_instance_get();
-    _d2dsearch_process_result_helper($query_id, $result, $my_instance['id']);
+    $my_id = $my_instance['id'];
+    $cb = isset($hook['post_process']) ? $hook['post_process'] : NULL;
+    _d2dsearch_process_result_helper($query_id, $result, $my_id, $cb);
   }
 }
 
 /**
- * Prepares the database, and starts N background search processes
+ * Handles search results.
  *
- * This function is only called upon receiving results from remote hosts.
+ * Results are always stored in the database, and in case they belong to
+ * query originated by a friend they are forwarded to original caller.
+ *
+ * This function is called upon receiving results from remote hosts, or
+ * it can be executed directly to perform a local search.
  *
  * @param string $query_id
  *   The id of the query to which the results belong.
  * @param string $result
  *   The serialized results.
- * @param $instance_id
+ * @param string $instance_id
  *   The id of the instance that sent this results.
+ * @param string $post_process_cb
+ *   The name of the function that will analyze the results. Defaults, NULL
  *
+ * @see _d2dsearch_do_local_search()
  * @see d2dsearch_process_result()
  */
-function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
+function _d2dsearch_process_result_helper($query_id, $result, $instance_id, $post_process_cb = NULL) {
 
   if (!_d2dsearch_lock_acquire('d2dsearch_query_cache', D2DSEARCH_ACQUIRE_TIMEOUT)) {
     return;
@@ -210,8 +271,17 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
     return;
   }
 
+  // Passing the results to a post process callback, if exists.
+  // Post process callback can modify them.
+  if (function_exists($post_process_cb)) {
+    // Results are discarded if post_process callback returns FALSE.
+    $result = call_user_func($post_process_cb, $result, $query_id, $instance_id);
+    if ($result === FALSE) {
+      return;
+    }
+  }
+
   // Inserting incoming results in database.
-  // TODO: at this point we could check if results are duplicates.
   db_insert('d2dsearch_result_cache')->fields(array(
     'qid' => $qid,
     'instance_id' => $instance_id,
@@ -221,8 +291,7 @@ function _d2dsearch_process_result_helper($query_id, $result, $instance_id) {
   lock_release('d2dsearch_result_cache');
 
   // If this are my results, stop the process.
-  $myid = d2d_api_own_instance_id_get();
-  if ($next_instance_id == $myid) {
+  if ($next_instance_id == d2d_api_own_instance_id_get()) {
     return;
   }
 
@@ -311,7 +380,6 @@ function _d2dsearch_process_query_helper($query_id, $type, $query, $instance_id,
     return FALSE;
   }
 
-  // TODO: check if we need to write to database if we n_hops === 0
   if ($n_hops > 0) {
     watchdog('d2dsearch', 'Forwarding request, still %hops hops', array(
       '%hops' => $n_hops,
